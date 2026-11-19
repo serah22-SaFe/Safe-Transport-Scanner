@@ -1,1 +1,416 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SAFE Transport Scanner</title>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 18px;
+      font-family: Arial, sans-serif;
+      background: #f3f6f8;
+      color: #172b3a;
+    }
+    .container {
+      max-width: 520px;
+      margin: 0 auto;
+    }
+    .header {
+      background: #123b32;
+      color: white;
+      padding: 22px;
+      border-radius: 14px;
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    .header h1 { margin: 0 0 6px; }
+    .header p { margin: 0; }
+    .panel {
+      background: white;
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 16px;
+      box-shadow: 0 2px 8px #0000000d;
+    }
+    label {
+      display: block;
+      font-weight: bold;
+      margin: 12px 0 6px;
+    }
+    input {
+      width: 100%;
+      padding: 13px;
+      border: 1px solid #cbd5dc;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 9px;
+      padding: 14px;
+      margin-top: 10px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+    .primary { background: #176b52; color: white; }
+    .secondary { background: #e8eef1; color: #172b3a; }
+    .board { background: #176b52; color: white; }
+    .alight { background: #245a91; color: white; }
+    .child {
+      display: none;
+      border: 1px solid #b9d9c8;
+      background: #f2faf5;
+      padding: 15px;
+      border-radius: 10px;
+      margin-top: 15px;
+      line-height: 1.7;
+    }
+    .status {
+      padding: 12px;
+      border-radius: 8px;
+      background: #edf2f5;
+      margin-top: 12px;
+      overflow-wrap: anywhere;
+    }
+    .error { background: #fff0f0; color: #a12626; }
+    .success { background: #e8f7ed; color: #176b38; }
+    #reader {
+      width: 100%;
+      margin-top: 12px;
+    }
+    .small {
+      color: #60717d;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>SAFE Transport</h1>
+    <p>School Journey Scanner</p>
+  </div>
+
+  <div class="panel">
+    <h2>Scan child's QR code</h2>
+    <p class="small">Use the phone's rear camera to scan a SAFE identification code.</p>
+
+    <button class="primary" id="startButton" onclick="startCamera()">
+      Start camera
+    </button>
+
+    <button class="secondary" id="stopButton" onclick="stopCamera()" disabled>
+      Stop camera
+    </button>
+
+    <div id="reader"></div>
+
+    <div class="status" id="cameraStatus">
+      Camera is not running.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Manual SAFE ID lookup</h2>
+
+    <label for="safeId">SAFE ID</label>
+    <input id="safeId" type="text" placeholder="Example: SAFE-000127"
+           autocomplete="off">
+
+    <button class="primary" id="findButton" onclick="findChild()">
+      Find child
+    </button>
+
+    <div id="lookupStatus" class="status">
+      Enter or scan a SAFE ID.
+    </div>
+
+    <div id="childDetails" class="child">
+      <strong>Child verified</strong>
+      <div id="childInfo"></div>
+
+      <label for="vehicle">Vehicle number</label>
+      <input id="vehicle" value="TEST-01">
+
+      <label for="attendant">Attendant name or ID</label>
+      <input id="attendant" value="Attendant 01">
+
+      <button class="board" id="boardButton"
+              onclick="recordJourney('BOARD')">
+        BOARD
+      </button>
+
+      <button class="alight" id="alightButton"
+              onclick="recordJourney('ALIGHT')">
+        ALIGHT
+      </button>
+    </div>
+  </div>
+
+  <p class="small">
+    SAFE Transport prototype. Use sample records only until attendant
+    authentication and production data protection are implemented.
+  </p>
+</div>
+
+<script>
+  // Existing SAFE Apps Script deployment.
+  const API_URL =
+    'https://script.google.com/macros/s/AKfycbxlUfq2A7ROeJqFdy_R_qOCH290DMK8W54KM4AQhAD6YOYrxBf-dRYOHGJWsaESaVLN6A/exec';
+
+  let qrScanner = null;
+  let selectedChild = null;
+  let requestNumber = 0;
+  let busy = false;
+
+  function showMessage(elementId, text, type) {
+    const element = document.getElementById(elementId);
+    element.textContent = text;
+    element.className = 'status' + (type ? ' ' + type : '');
+  }
+
+  // Read-only requests use JSONP to avoid browser CORS restrictions.
+  function apiGet(action, params) {
+    return new Promise((resolve, reject) => {
+      const callbackName = 'safeCallback' + (++requestNumber);
+      const script = document.createElement('script');
+      const query = new URLSearchParams({
+        action: action,
+        callback: callbackName,
+        ...params
+      });
+
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('The SAFE server did not respond in time.'));
+      }, 15000);
+
+      function cleanup() {
+        clearTimeout(timeout);
+        delete window[callbackName];
+        if (script.parentNode) script.parentNode.removeChild(script);
+      }
+
+      window[callbackName] = function(data) {
+        cleanup();
+        resolve(data);
+      };
+
+      script.onerror = function() {
+        cleanup();
+        reject(new Error('Could not connect to the SAFE server.'));
+      };
+
+      script.src = API_URL + '?' + query.toString();
+      document.body.appendChild(script);
+    });
+  }
+
+  async function findChild() {
+    const safeId = document.getElementById('safeId').value
+      .trim().replace(/\s+/g, '').toUpperCase();
+
+    selectedChild = null;
+    document.getElementById('childDetails').style.display = 'none';
+
+    if (!safeId) {
+      showMessage('lookupStatus', 'Enter a SAFE ID first.', 'error');
+      return;
+    }
+
+    document.getElementById('safeId').value = safeId;
+    document.getElementById('findButton').disabled = true;
+    showMessage('lookupStatus', 'Checking SAFE records...', '');
+
+    try {
+      const result = await apiGet('getChild', { safeId: safeId });
+
+      if (!result.ok) {
+        showMessage('lookupStatus', result.message || 'Child not found.', 'error');
+        return;
+      }
+
+      selectedChild = result.child;
+
+      document.getElementById('childInfo').innerHTML =
+        '<div><strong>SAFE ID:</strong> ' + escapeHtml(selectedChild.id) + '</div>' +
+        '<div><strong>Name:</strong> ' + escapeHtml(selectedChild.name) + '</div>' +
+        '<div><strong>Pickup:</strong> ' + escapeHtml(selectedChild.pickup) + '</div>' +
+        '<div><strong>School:</strong> ' + escapeHtml(selectedChild.school) + '</div>' +
+        '<div><strong>Route:</strong> ' + escapeHtml(selectedChild.route) + '</div>' +
+        '<div><strong>Status:</strong> ' + escapeHtml(selectedChild.status) + '</div>';
+
+      document.getElementById('childDetails').style.display = 'block';
+      showMessage('lookupStatus', 'Child verified successfully.', 'success');
+
+    } catch (error) {
+      showMessage('lookupStatus', error.message, 'error');
+    } finally {
+      document.getElementById('findButton').disabled = false;
+    }
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(char) {
+      return {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[char];
+    });
+  }
+
+  async function startCamera() {
+    if (!window.Html5Qrcode) {
+      showMessage('cameraStatus',
+        'QR scanner library did not load. Check your internet connection.',
+        'error');
+      return;
+    }
+
+    if (qrScanner) return;
+
+    qrScanner = new Html5Qrcode('reader');
+    document.getElementById('startButton').disabled = true;
+    showMessage('cameraStatus', 'Requesting camera access...', '');
+
+    try {
+      await qrScanner.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 240, height: 240 } },
+        async function(decodedText) {
+          if (busy) return;
+          busy = true;
+
+          document.getElementById('safeId').value = decodedText.trim();
+          await stopCamera();
+          await findChild();
+
+          busy = false;
+        },
+        function() {
+          // Ignore individual frames without a QR code.
+        }
+      );
+
+      document.getElementById('stopButton').disabled = false;
+      showMessage('cameraStatus',
+        'Camera active. Point it at a SAFE QR code.', 'success');
+
+    } catch (error) {
+      const details = error && (error.message || error.name)
+        ? (error.message || error.name)
+        : String(error);
+
+      await stopCamera();
+      showMessage('cameraStatus', 'Camera could not start: ' + details, 'error');
+    } finally {
+      document.getElementById('startButton').disabled = false;
+    }
+  }
+
+  async function stopCamera() {
+    if (qrScanner) {
+      const scanner = qrScanner;
+      qrScanner = null;
+
+      try {
+        if (scanner.isScanning) await scanner.stop();
+        await scanner.clear();
+      } catch (error) {
+        console.log('Scanner cleanup:', error);
+      }
+    }
+
+    document.getElementById('stopButton').disabled = true;
+  }
+
+  async function recordJourney(event) {
+    if (!selectedChild || busy) return;
+
+    busy = true;
+    document.getElementById('boardButton').disabled = true;
+    document.getElementById('alightButton').disabled = true;
+
+    showMessage('lookupStatus', 'Submitting ' + event + ' record...', '');
+
+    const payload = {
+      safeId: selectedChild.id,
+      event: event,
+      vehicle: document.getElementById('vehicle').value.trim(),
+      attendant: document.getElementById('attendant').value.trim()
+    };
+
+    try {
+      // text/plain avoids a CORS preflight. The response is opaque,
+      // so we verify the write by reading the dashboard afterwards.
+      await fetch(API_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        redirect: 'follow',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify(payload)
+      });
+
+      let confirmed = false;
+
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        const dashboard = await apiGet('getDashboardData', {});
+
+        if (dashboard.ok && dashboard.scans) {
+          const match = dashboard.scans.find(scan =>
+            scan.safeId === payload.safeId &&
+            scan.event === payload.event &&
+            scan.vehicle === payload.vehicle &&
+            scan.attendant === payload.attendant
+          );
+
+          if (match) {
+            confirmed = true;
+            break;
+          }
+        }
+      }
+
+      if (confirmed) {
+        showMessage('lookupStatus',
+          event + ' recorded and verified in SAFE records.', 'success');
+      } else {
+        showMessage('lookupStatus',
+          'The submission was sent, but we could not verify it. Check ScanRecords before trying again.',
+          'error');
+      }
+
+    } catch (error) {
+      showMessage('lookupStatus',
+        'Submission or verification failed: ' + error.message,
+        'error');
+    } finally {
+      busy = false;
+      document.getElementById('boardButton').disabled = false;
+      document.getElementById('alightButton').disabled = false;
+    }
+  }
+</script>
+</body>
+</html>
+

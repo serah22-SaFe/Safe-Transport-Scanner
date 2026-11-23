@@ -277,54 +277,86 @@
     });
   }
 
-  async function startCamera() {
-    if (!window.Html5Qrcode) {
-      showMessage('cameraStatus',
-        'QR scanner library did not load. Check your internet connection.',
-        'error');
-      return;
-    }
+ 
+async function startCamera() {
+  if (!window.Html5Qrcode) {
+    showMessage('cameraStatus',
+      'QR scanner library did not load. Check your internet connection.',
+      'error');
+    return;
+  }
 
-    if (qrScanner) return;
+  if (qrScanner) return;
 
-    qrScanner = new Html5Qrcode('reader');
-    document.getElementById('startButton').disabled = true;
-    showMessage('cameraStatus', 'Requesting camera access...', '');
+  qrScanner = new Html5Qrcode('reader');
+  document.getElementById('startButton').disabled = true;
+  showMessage('cameraStatus', 'Requesting camera access...', '');
 
-    try {
-      await qrScanner.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 240, height: 240 } },
-        async function(decodedText) {
-          if (busy) return;
-          busy = true;
+  try {
+    await qrScanner.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: { width: 240, height: 240 } },
 
-          document.getElementById('safeId').value = decodedText.trim();
-          await stopCamera();
+      async function(decodedText) {
+        if (busy) return;
+
+        busy = true;
+
+        try {
+          const safeId = String(decodedText || '')
+            .trim()
+            .replace(/\s+/g, '')
+            .toUpperCase();
+
+          document.getElementById('safeId').value = safeId;
+
+          showMessage(
+            'cameraStatus',
+            'QR code detected. Verifying SAFE ID...',
+            'success'
+          );
+
+          // Look up the child BEFORE stopping the camera.
           await findChild();
 
+        } finally {
+          // Stop the camera after the lookup finishes.
+          await stopCamera();
           busy = false;
-        },
-        function() {
-          // Ignore individual frames without a QR code.
         }
-      );
+      },
 
-      document.getElementById('stopButton').disabled = false;
-      showMessage('cameraStatus',
-        'Camera active. Point it at a SAFE QR code.', 'success');
+      function() {
+        // Ignore individual frames without a QR code.
+      }
+    );
 
-    } catch (error) {
-      const details = error && (error.message || error.name)
-        ? (error.message || error.name)
-        : String(error);
+    document.getElementById('stopButton').disabled = false;
 
-      await stopCamera();
-      showMessage('cameraStatus', 'Camera could not start: ' + details, 'error');
-    } finally {
-      document.getElementById('startButton').disabled = false;
-    }
+    showMessage(
+      'cameraStatus',
+      'Camera active. Point it at a SAFE QR code.',
+      'success'
+    );
+
+  } catch (error) {
+    const details = error && (error.message || error.name)
+      ? (error.message || error.name)
+      : String(error);
+
+    await stopCamera();
+
+    showMessage(
+      'cameraStatus',
+      'Camera could not start: ' + details,
+      'error'
+    );
+
+  } finally {
+    document.getElementById('startButton').disabled = false;
   }
+}
+
 
   async function stopCamera() {
     if (qrScanner) {
